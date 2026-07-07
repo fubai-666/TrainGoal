@@ -292,7 +292,7 @@ def get_scene_list(data):
     
     return scene_list
 
-def augment_data(data, image_path='/binary_map/', images={}, seg_mask=False, normalize_map=False):
+def augment_data_old(data, image_path='/binary_map/', images={}, seg_mask=False, normalize_map=False):
 
 	scene_list = get_scene_list(data)
     
@@ -361,6 +361,43 @@ def augment_data(data, image_path='/binary_map/', images={}, seg_mask=False, nor
 	print('data augmentation - flip complete')
     
 	return data, images
+
+def augment_data(
+    data,
+    image_path='/binary_map/',
+    images=None,
+    seg_mask=False,
+    normalize_map=False,
+):
+    """
+    Memory-safe preprocessing used by the old TrainGoal version:
+    - load only the original scene maps
+    - do not create rotated / flipped copies
+    - return the original dataset unchanged
+    """
+    if images is None:
+        images = {}
+
+    scene_list = get_scene_list(data)
+
+    for scene in scene_list:
+        im_path = image_path + scene + '.png'
+
+        if seg_mask:
+            im = cv2.imread(im_path, 0)
+            im = np.expand_dims(im, 2)
+            assert np.ndim(im) == 3
+        else:
+            im = cv2.imread(im_path)[:, :, :]
+
+        if normalize_map:
+            images[scene] = im.astype(np.float32) / 255.0
+        else:
+            images[scene] = im
+
+    print('data augmentation disabled: only original scenes are used (no rotation / flip).')
+
+    return data, images
 
 
 def augment_eth_ucy_social(train_batches, train_scenes, train_masks, train_images):

@@ -2,6 +2,7 @@ import torch
 import torchvision.transforms as T
 from utils.image_utils import get_temp_img
 from main_process import main_process
+from tqdm.auto import tqdm
 
 def train_pred_goal(model, train_loader, train_images, e, obs_len, pred_len, batch_size, params, gt_template, device, input_template, optimizer, criterion, dataset_name, homo_mat, mode):
 
@@ -18,9 +19,8 @@ def train_pred_goal(model, train_loader, train_images, e, obs_len, pred_len, bat
 	img_template = torch.tensor(get_temp_img(0.2, img_size)).unsqueeze(0).type(torch.float32)
             
 	# outer loop, for loop over each scene as scenes have different image size and to calculate segmentation only once
-	for batch, (trajectory, trajectory2, scene, goal, time_traj, time_goal) in enumerate(train_loader):
-        
-		print(f"training... epoch:{e}, batch:{batch}/{len(train_loader)}")
+	progress = tqdm(train_loader, desc=f"Train epoch {e}", dynamic_ncols=True)
+	for batch, (trajectory, trajectory2, scene, goal, time_traj, time_goal) in enumerate(progress):
 		scene_image = []
 		for s in scene:      
 			if scene_image == []:

@@ -163,8 +163,8 @@ class GoalNet:
 
 		print('Preprocess data')
 
-		if not os.path.exists('./models/'):
-			os.makedirs('./models/')
+		model_dir = params['model_dir']
+		os.makedirs(model_dir, exist_ok=True)
 			
 		self.homo_mat = None
 		seg_mask = True 
@@ -225,6 +225,7 @@ class GoalNet:
 
 		self.train_loss_mem = []
 		self.val_loss_mem = []
+		self.epoch_mem = []
 
 		print('Start training')
 		for e in tqdm(range(params['num_epochs']), desc='Epoch'):
@@ -253,14 +254,27 @@ class GoalNet:
 				print(f'Best Epoch {e}: \nVal loss: {val_loss}')
 				best_val_loss = val_loss
 			
-			# backup the model weights every 10 epochs
-			if e > 0 or params['start_epoch']>0:
-
-				torch.save({'epoch':e+params['start_epoch']+1,'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, './models/model_pred_goal_{}epoch.pt'.format(e+params['start_epoch']+1))
+			if params['start_epoch'] == 0:
+				epoch_id = e
+			else:
+				epoch_id = e + params['start_epoch'] + 1
+			torch.save(
+				{
+					'epoch': epoch_id,
+					'model_state_dict': model.state_dict(),
+					'optimizer_state_dict': optimizer.state_dict(),
+				},
+				os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(epoch_id)),
+			)
 				
+			self.epoch_mem.append(epoch_id)
 			self.train_loss_mem.append(train_loss)
 			self.val_loss_mem.append(val_loss)
-			np.savetxt('./loss_train-val.csv',np.array([self.train_loss_mem, self.val_loss_mem]).transpose(),delimiter=',')
+			np.savetxt(
+				os.path.join(model_dir, 'loss_train-val.csv'),
+				np.array([self.epoch_mem, self.train_loss_mem, self.val_loss_mem]).transpose(),
+				delimiter=',',
+			)
 
 
 	def evaluate(self, data, params, image_path, batch_size=8, 
