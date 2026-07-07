@@ -1,12 +1,11 @@
 resize: 0.25  # image resize factor, to also resize the trajectories to fit image scale
-viz_epoch: 10
 learning_rate: 0.000002
 batch_size: 32
-num_epochs: 1000
-start_epoch: 0
+num_epochs: 100
+start_epoch: 3
 bfloat16: false
 
-model_dir: ./bs32_lr2e-6
+model_dir: ./models/bs32_lr2e-6
 
 num_obs: 15
 num_pred: 90

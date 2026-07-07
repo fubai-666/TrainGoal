@@ -222,15 +222,28 @@ class GoalNet:
 
 		best_val_loss = 99999999999999
 
-
+		loss_csv_path = os.path.join(model_dir, 'loss_train-val.csv')
 		self.train_loss_mem = []
 		self.val_loss_mem = []
 		self.epoch_mem = []
+		if os.path.exists(loss_csv_path):
+			loss_hist = np.loadtxt(loss_csv_path, delimiter=',', skiprows=1)
+			loss_hist = np.atleast_2d(loss_hist)
+			if loss_hist.shape[1] != 3:
+				raise ValueError(f"Expected 3 columns in {loss_csv_path}, got {loss_hist.shape[1]}")
+			self.epoch_mem = loss_hist[:, 0].astype(int).tolist()
+			self.train_loss_mem = loss_hist[:, 1].tolist()
+			self.val_loss_mem = loss_hist[:, 2].tolist()
+			if self.val_loss_mem:
+				best_val_loss = min(self.val_loss_mem)
 
 		print('Start training')
-		for e in tqdm(range(params['num_epochs']), desc='Epoch'):
+		start_global_epoch = 0 if params['start_epoch'] == 0 else params['start_epoch'] + 1
+		epoch_progress = tqdm(range(start_global_epoch, params['num_epochs']), desc='Epoch', dynamic_ncols=True)
+		for epoch_id in epoch_progress:
+			epoch_progress.set_description(f'Epoch {epoch_id}')
             
-			train_loss = train_pred_goal(model, train_loader, train_images, e, obs_len, pred_len,
+			train_loss = train_pred_goal(model, train_loader, train_images, epoch_id, obs_len, pred_len,
 									 batch_size, params, gt_template, device,
 									 input_template, optimizer, criterion, dataset_name, self.homo_mat, mode='train')
 			print(f'Train loss: {train_loss}')
@@ -243,7 +256,7 @@ class GoalNet:
 										temperature=params['temperature'], normalize_map=normalize_map, 
 										use_TTST=False, use_CWS=False, dataset_name=dataset_name,
 										homo_mat=self.homo_mat, mode='val', 
-										plot_traj=False, plot_map=False, epoch=e, params=params)
+										plot_traj=False, plot_map=False, epoch=epoch_id, params=params)
             
 			val_loss = val_loss2
 						
@@ -251,13 +264,9 @@ class GoalNet:
 
 			# save the model weights with the lowest val ADE
 			if val_loss < best_val_loss:
-				print(f'Best Epoch {e}: \nVal loss: {val_loss}')
+				print(f'Best Epoch {epoch_id}: \nVal loss: {val_loss}')
 				best_val_loss = val_loss
 			
-			if params['start_epoch'] == 0:
-				epoch_id = e
-			else:
-				epoch_id = e + params['start_epoch'] + 1
 			torch.save(
 				{
 					'epoch': epoch_id,
@@ -271,9 +280,11 @@ class GoalNet:
 			self.train_loss_mem.append(train_loss)
 			self.val_loss_mem.append(val_loss)
 			np.savetxt(
-				os.path.join(model_dir, 'loss_train-val.csv'),
+				loss_csv_path,
 				np.array([self.epoch_mem, self.train_loss_mem, self.val_loss_mem]).transpose(),
 				delimiter=',',
+				header='epoch,train_loss,val_loss',
+				comments='',
 			)
 
 
@@ -340,9 +351,9 @@ class GoalNet:
     
 	def load_pred_goal(self, path, flag_freeze=0):
 		checkpoint = torch.load(path)        
-		print(self.model.pred_goal.load_state_dict(checkpoint['model_state_dict']))
+		print(self.model.load_state_dict(checkpoint['model_state_dict']))
 		if flag_freeze==1:
-		    for param in self.model.pred_goal.parameters():
+		    for param in self.model.parameters():
     		 	param.requires_grad = False
 
 	def save(self, path):
