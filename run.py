@@ -2,7 +2,7 @@ import pandas as pd
 import yaml
 from model_vrlocomotion import GoalNet
 
-CONFIG_FILE_PATH = 'config/vrlocomotion.yaml'  # yaml config file containing all the hyperparameters
+CONFIG_FILE_PATH = './config/vrlocomotion.yaml'  # yaml config file containing all the hyperparameters
 DATA_DIR = './dataset/'
 
 TRAIN_DATA_PATH = DATA_DIR + 'LocoVR/train'
@@ -11,13 +11,12 @@ TRAIN_IMAGE_PATH = DATA_DIR + 'map_vr/binary_map/'
 VAL_DATA_PATH = DATA_DIR + 'LocoVR/val'
 VAL_IMAGE_PATH = DATA_DIR + 'map_vr/binary_map/'
 
-BATCH_SIZE = 32
-
 with open(CONFIG_FILE_PATH) as file:
     params = yaml.load(file, Loader=yaml.FullLoader)
 experiment_name = CONFIG_FILE_PATH.split('.yaml')[0].split('config/')[1]
 params
 
+BATCH_SIZE = params['batch_size']
 OBS_LEN = params['num_obs']     # in timesteps
 PRED_LEN = params['num_pred']    # in timesteps
 

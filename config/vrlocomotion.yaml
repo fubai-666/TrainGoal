@@ -3,6 +3,7 @@ resize: 0.25  # image resize factor, to also resize the trajectories to fit imag
 
 viz_epoch: 10
 learning_rate: 0.000002
+batch_size: 32
 num_epochs: 1000
 start_epoch: 0
 bfloat16: false
