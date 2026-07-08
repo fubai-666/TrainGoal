@@ -171,13 +171,15 @@ class GoalNet:
 		normalize_map = True
 		
 		# Load train images and augment train data and images (by rotating and flipping)
-		df_train, train_images = augment_data(train_data, image_path=train_image_path, images={}, seg_mask=seg_mask, normalize_map=normalize_map)
+		# df_train, train_images = augment_data(train_data, image_path=train_image_path, images={}, seg_mask=seg_mask, normalize_map=normalize_map)
+		train_images = create_images_dict(train_data, image_path=train_image_path, seg_mask=seg_mask, normalize_map=normalize_map)
 
 		# Load val scene images
 		val_images = create_images_dict(val_data, image_path=val_image_path, seg_mask=seg_mask, normalize_map=normalize_map)
 
 		# Initialize dataloaders
-		train_dataset = SceneDataset(df_train, resize=params['resize'], total_len=total_len, num_aug=8)
+		# train_dataset = SceneDataset(df_train, resize=params['resize'], total_len=total_len, num_aug=8)
+		train_dataset = SceneDataset(train_data, resize=params['resize'], total_len=total_len, num_aug=1)
 		train_loader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=scene_collate, shuffle=True)
 
 		val_dataset = SceneDataset(val_data, resize=params['resize'], total_len=total_len, num_aug=1)
