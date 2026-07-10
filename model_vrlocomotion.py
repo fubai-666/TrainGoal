@@ -5,6 +5,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 import os
+import csv
+import importlib
+import runpy
+import shutil
+import sys
+from pathlib import Path
 
 from utils.preprocessing_vrlocomotion import augment_data, create_images_dict
 from utils.image_utils import create_gaussian_heatmap_template, create_determistic_template, create_dist_mat, \
@@ -144,6 +150,9 @@ class GoalNet:
 		self.pred_len = pred_len
 		self.division_factor = 2 ** len(params['encoder_channels'])
 		self.bfloat16 = params['bfloat16']
+		self.main_root = Path(__file__).resolve().parent.parent
+		self.best_traj_score = -float("inf")
+		self.best_traj_model_path = None
 
 		self.model = PRED_GOAL(obs_len=self.obs_len,
 							   pred_len=self.pred_len,
@@ -151,6 +160,112 @@ class GoalNet:
 							   encoder_channels=params['encoder_channels'],
 							   decoder_channels=params['decoder_channels']
                                )
+
+	def _get_main_setting(self):
+		if str(self.main_root) not in sys.path:
+			sys.path.insert(0, str(self.main_root))
+		return importlib.import_module("setting")
+
+	def _run_main_script(self, script_name, argv):
+		old_argv = sys.argv[:]
+		old_cwd = os.getcwd()
+		old_sys_path = sys.path[:]
+		modules_to_reset = [
+			"model_vrlocomotion",
+			"utility",
+			"path_generator",
+			"prompt_manager",
+			"eval_traj",
+		]
+		module_backup = {name: sys.modules.get(name) for name in modules_to_reset}
+		try:
+			sys.path = [str(self.main_root)] + [p for p in sys.path if p != str(self.main_root)]
+			sys.argv = argv
+			os.chdir(self.main_root)
+			for name in modules_to_reset:
+				sys.modules.pop(name, None)
+			runpy.run_path(str(self.main_root / script_name), run_name="__main__")
+		finally:
+			for name in modules_to_reset:
+				sys.modules.pop(name, None)
+			for name, module in module_backup.items():
+				if module is not None:
+					sys.modules[name] = module
+			sys.path = old_sys_path
+			sys.argv = old_argv
+			os.chdir(old_cwd)
+
+	def _read_traj_eval_metrics(self, csv_path):
+		with open(csv_path, "r", encoding="utf-8") as f:
+			rows = list(csv.reader(f))
+		if len(rows) < 2:
+			raise RuntimeError(f"Invalid traj eval csv: {csv_path}")
+		header = rows[0]
+		values = [float(v) for v in rows[1]]
+		return header, values
+
+	def _save_best_checkpoint(self, checkpoint_path, eval_csv_path, epoch_id, model_dir):
+		best_dir = os.path.join(model_dir, "best")
+		os.makedirs(best_dir, exist_ok=True)
+		for fname in os.listdir(best_dir):
+			if fname.endswith(".pt") or fname.endswith(".csv"):
+				os.remove(os.path.join(best_dir, fname))
+		best_name = f"model_pred_goal_best_epoch{epoch_id}.pt"
+		shutil.copy2(checkpoint_path, os.path.join(best_dir, best_name))
+		shutil.copy2(eval_csv_path, os.path.join(best_dir, f"eval_traj_best_epoch{epoch_id}.csv"))
+
+	def eval_traj_checkpoint(self, checkpoint_path, epoch_id, model_dir):
+		st_main = self._get_main_setting()
+		run_name = os.path.basename(os.path.normpath(model_dir))
+		path_output = f"{run_name}_epoch{epoch_id}"
+		batch_eval_dir = self.main_root / "Eval-traj" / run_name
+		batch_eval_dir.mkdir(parents=True, exist_ok=True)
+		result_dir = self.main_root / "Result" / path_output
+		eval_dir = self.main_root / "Eval-traj" / path_output
+
+		old_goal_model_path = st_main.goal_model_path
+		old_path_output = st_main.path_output
+		old_scene_id = st_main.scene_id
+		old_act_id = st_main.act_id
+
+		try:
+			st_main.goal_model_path = checkpoint_path
+			st_main.path_output = path_output
+			st_main.scene_id = [444]
+			st_main.act_id = [0]
+
+			self._run_main_script("TR-LLM.py", ["TR-LLM.py", "", "1", "0", "0", "0"])
+			self._run_main_script("eval_traj.py", ["eval_traj.py"])
+
+			eval_csv_path = eval_dir / "eval_traj.csv"
+			header, values = self._read_traj_eval_metrics(eval_csv_path)
+			score = float(np.mean(values))
+			export_eval_csv_path = batch_eval_dir / f"eval_traj_epoch{epoch_id}.csv"
+			shutil.copy2(eval_csv_path, export_eval_csv_path)
+
+			summary_csv_path = os.path.join(model_dir, "traj_eval_summary.csv")
+			write_header = not os.path.exists(summary_csv_path)
+			with open(summary_csv_path, "a", encoding="utf-8", newline="") as f:
+				writer = csv.writer(f)
+				if write_header:
+					writer.writerow(["epoch", "checkpoint", "mean_score"] + header)
+				writer.writerow([epoch_id, os.path.basename(checkpoint_path), score] + values)
+
+			if score > self.best_traj_score:
+				self.best_traj_score = score
+				self.best_traj_model_path = checkpoint_path
+				self._save_best_checkpoint(checkpoint_path, export_eval_csv_path, epoch_id, model_dir)
+
+			return score
+		finally:
+			if result_dir.exists():
+				shutil.rmtree(result_dir)
+			if eval_dir.exists():
+				shutil.rmtree(eval_dir)
+			st_main.goal_model_path = old_goal_model_path
+			st_main.path_output = old_path_output
+			st_main.scene_id = old_scene_id
+			st_main.act_id = old_act_id
         
 	def train(self, train_data, val_data, params, train_image_path, val_image_path, batch_size=8, device=None, dataset_name=None, test_scene=0):
 
@@ -225,6 +340,7 @@ class GoalNet:
 		best_val_loss = 99999999999999
 
 		loss_csv_path = os.path.join(model_dir, 'loss_train-val.csv')
+		traj_eval_csv_path = os.path.join(model_dir, 'traj_eval_summary.csv')
 		self.train_loss_mem = []
 		self.val_loss_mem = []
 		self.epoch_mem = []
@@ -238,6 +354,13 @@ class GoalNet:
 			self.val_loss_mem = loss_hist[:, 2].tolist()
 			if self.val_loss_mem:
 				best_val_loss = min(self.val_loss_mem)
+		if os.path.exists(traj_eval_csv_path):
+			with open(traj_eval_csv_path, "r", encoding="utf-8") as f:
+				rows = list(csv.reader(f))
+			if len(rows) > 1:
+				best_row = max(rows[1:], key=lambda row: float(row[2]))
+				self.best_traj_score = float(best_row[2])
+				self.best_traj_model_path = os.path.join(model_dir, best_row[1])
 
 		print('Start training')
 		start_global_epoch = 0 if params['start_epoch'] == 0 else params['start_epoch'] + 1
@@ -269,14 +392,18 @@ class GoalNet:
 				print(f'Best Epoch {epoch_id}: \nVal loss: {val_loss}')
 				best_val_loss = val_loss
 			
+			checkpoint_path = os.path.abspath(os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(epoch_id)))
 			torch.save(
 				{
 					'epoch': epoch_id,
 					'model_state_dict': model.state_dict(),
 					'optimizer_state_dict': optimizer.state_dict(),
 				},
-				os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(epoch_id)),
+				checkpoint_path,
 			)
+			traj_score = self.eval_traj_checkpoint(checkpoint_path, epoch_id, model_dir)
+			print(f'Traj eval mean score: {traj_score}')
+			print(f'Best traj score so far: {self.best_traj_score}')
 				
 			self.epoch_mem.append(epoch_id)
 			self.train_loss_mem.append(train_loss)
