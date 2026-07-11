@@ -12,12 +12,17 @@ import shutil
 import sys
 from pathlib import Path
 
+MAIN_ROOT = Path(__file__).resolve().parent.parent
+if str(MAIN_ROOT) not in sys.path:
+	sys.path.insert(0, str(MAIN_ROOT))
+
 from utils.preprocessing_vrlocomotion import augment_data, create_images_dict
 from utils.image_utils import create_gaussian_heatmap_template, create_determistic_template, create_dist_mat, \
 	preprocess_image_for_segmentation, pad, resize
 from utils.dataloader_vrlocomotion import SceneDataset, scene_collate
 from test_vrlocomotion import evaluate
 from train_vrlocomotion import train_pred_goal
+from model_transformer import PRED_GOAL_Transformer
 
 
 class Encoder(nn.Module):
@@ -154,13 +159,21 @@ class GoalNet:
 		self.best_traj_score = -float("inf")
 		self.best_traj_model_path = None
 
-		self.model = PRED_GOAL(obs_len=self.obs_len,
-							   pred_len=self.pred_len,
-							   map_channel=1,
-							   encoder_channels=params['encoder_channels'],
-							   decoder_channels=params['decoder_channels']
-                               )
-
+		# self.model = PRED_GOAL(obs_len=self.obs_len,
+		# 					   pred_len=self.pred_len,
+		# 					   map_channel=1,
+		# 					   encoder_channels=params['encoder_channels'],
+		# 					   decoder_channels=params['decoder_channels']
+        #                        )
+		self.model = PRED_GOAL_Transformer(obs_len=self.obs_len,
+									pred_len=self.pred_len,
+									map_channel=1,
+									decoder_channels=[512, 256, 128],
+									embed_dim=512,
+									patch_size=8,
+									num_layers=6,
+									num_heads=8,
+								)
 	def _get_main_setting(self):
 		if str(self.main_root) not in sys.path:
 			sys.path.insert(0, str(self.main_root))
