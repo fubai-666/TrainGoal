@@ -10,13 +10,14 @@ import importlib
 import runpy
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 MAIN_ROOT = Path(__file__).resolve().parent.parent
 if str(MAIN_ROOT) not in sys.path:
 	sys.path.insert(0, str(MAIN_ROOT))
 
-from utils.preprocessing_vrlocomotion import augment_data, create_images_dict
+from utils.preprocessing_vrlocomotion import augment_data_old, augment_data, create_images_dict
 from utils.image_utils import create_gaussian_heatmap_template, create_determistic_template, create_dist_mat, \
 	preprocess_image_for_segmentation, pad, resize
 from utils.dataloader_vrlocomotion import SceneDataset, scene_collate
@@ -293,6 +294,23 @@ class GoalNet:
 		print('Preprocess data')
 
 		model_dir = params['model_dir']
+		resume_epoch = None
+		if params['use_latest_epoch']:
+			if os.path.isdir(model_dir):
+				prefix = 'model_pred_goal_'
+				suffix = 'epoch.pt'
+				epochs = [
+					int(name[len(prefix):-len(suffix)])
+					for name in os.listdir(model_dir)
+					if name.startswith(prefix)
+					and name.endswith(suffix)
+					and name[len(prefix):-len(suffix)].isdigit()
+				]
+				if epochs:
+					resume_epoch = max(epochs)
+		elif os.path.exists(model_dir):
+			model_dir = '{}_{}'.format(model_dir, datetime.now().strftime('%m%d%H'))
+			params['model_dir'] = model_dir
 		os.makedirs(model_dir, exist_ok=True)
 			
 		self.homo_mat = None
@@ -330,8 +348,8 @@ class GoalNet:
 		# 	param.requires_grad = False
 
 		optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
-		if params['start_epoch'] > 0:
-			checkpoint_path = os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(params['start_epoch']))
+		if resume_epoch is not None:
+			checkpoint_path = os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(resume_epoch))
 			checkpoint = torch.load(checkpoint_path, map_location=device)
 			model.load_state_dict(checkpoint['model_state_dict'])
 			optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -382,7 +400,7 @@ class GoalNet:
 				self.best_traj_model_path = os.path.join(model_dir, best_row[1])
 
 		print('Start training')
-		start_global_epoch = 0 if params['start_epoch'] == 0 else params['start_epoch'] + 1
+		start_global_epoch = 0 if resume_epoch is None else resume_epoch + 1
 		epoch_progress = tqdm(range(start_global_epoch, params['num_epochs']), desc='Epoch', dynamic_ncols=True)
 		for epoch_id in epoch_progress:
 			epoch_progress.set_description(f'Epoch {epoch_id}')
