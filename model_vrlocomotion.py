@@ -165,15 +165,16 @@ class GoalNet:
 		# 					   encoder_channels=params['encoder_channels'],
 		# 					   decoder_channels=params['decoder_channels']
         #                        )
-		self.model = PRED_GOAL_Transformer(obs_len=self.obs_len,
-									pred_len=self.pred_len,
-									map_channel=1,
-									decoder_channels=[512, 256, 128],
-									embed_dim=512,
-									patch_size=8,
-									num_layers=6,
-									num_heads=8,
-								)
+		self.model = PRED_GOAL_Transformer(
+			obs_len=self.obs_len,
+			pred_len=self.pred_len,
+			map_channel=1,
+			decoder_channels=[256, 128],
+			embed_dim=256,
+			patch_size=4,
+			num_layers=3,
+			num_heads=8,
+		)
 	def _get_main_setting(self):
 		if str(self.main_root) not in sys.path:
 			sys.path.insert(0, str(self.main_root))
@@ -329,6 +330,11 @@ class GoalNet:
 		# 	param.requires_grad = False
 
 		optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+		if params['start_epoch'] > 0:
+			checkpoint_path = os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(params['start_epoch']))
+			checkpoint = torch.load(checkpoint_path, map_location=device)
+			model.load_state_dict(checkpoint['model_state_dict'])
+			optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 		criterion = nn.BCEWithLogitsLoss()
 
 		# Create template

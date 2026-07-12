@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import copy
 import torch
+from model_transformer import PRED_GOAL_Transformer
 from utils.image_utils import get_patch, get_patch2, sampling, image2world, get_mask, get_idx, create_gaussian_heatmap_template, conv_points2img, conv_heading2img, conv_heading2img2
 
 class PRED:
@@ -18,6 +19,12 @@ class PRED:
         self.id = -1
         self.time = []
         self.time_goal = -1
+
+def spatial_cross_entropy(pred_logits, target_heatmap):
+    pred_logits = pred_logits.flatten(1)
+    target_heatmap = target_heatmap.flatten(1)
+    target_prob = target_heatmap / target_heatmap.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    return -(target_prob * torch.log_softmax(pred_logits, dim=1)).sum(dim=1).mean()
 
 def viz_input(scene_image, observed_map, heading_map, goal_obj, goal_traj):
     
@@ -52,7 +59,10 @@ def main_process(trajectory, trajectory2, img_template, scene_image, goal_obj, g
     feature_input = torch.cat([scene_image, observed_map], dim=1).type(torch.float32)
     pred_map = model(feature_input)
     goal_map_gt1 = conv_points2img([y.to(device),x.to(device)], traj=goal_obj*params['img_size_r'], distribution=[0.5, 0.5], img_size=img_size)
-    loss = criterion(pred_map[:,0:1], goal_map_gt1) * params['loss_scale']  # BCEWithLogitsLoss
+    if isinstance(model, PRED_GOAL_Transformer):
+        loss = spatial_cross_entropy(pred_map[:,0:1], goal_map_gt1)
+    else:
+        loss = criterion(pred_map[:,0:1], goal_map_gt1) * params['loss_scale']
     
     if mode=='test':
         pred.obs_traj1 = trajectory[:,::num_step,:].detach().cpu().numpy()
@@ -60,6 +70,10 @@ def main_process(trajectory, trajectory2, img_template, scene_image, goal_obj, g
         pred.scene_img = scene_image.detach().cpu().numpy()
         pred.goal_traj = goal_traj.detach().cpu().numpy()
         pred.goal_obj = goal_obj.detach().cpu().numpy()
-        pred.goal_map_pred = torch.sigmoid(pred_map).detach().cpu().numpy()
+        if isinstance(model, PRED_GOAL_Transformer):
+            pred_map = torch.softmax(pred_map.flatten(2), dim=2).reshape_as(pred_map)
+        else:
+            pred_map = torch.sigmoid(pred_map)
+        pred.goal_map_pred = pred_map.detach().cpu().numpy()
     
-    return pred, loss 
+    return pred, loss
