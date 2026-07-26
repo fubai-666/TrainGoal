@@ -173,7 +173,7 @@ class GoalNet:
 			decoder_channels=[256, 128],
 			embed_dim=256,
 			patch_size=4,
-			num_layers=3,
+			num_layers=6,
 			num_heads=8,
 		)
 	def _get_main_setting(self):

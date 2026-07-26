@@ -1,11 +1,11 @@
 resize: 0.25  # image resize factor, to also resize the trajectories to fit image scale
 learning_rate: 0.0001
 batch_size: 32
-num_epochs: 100
+num_epochs: 10
 bfloat16: false
 
 use_latest_epoch: false
-model_dir: ./models/bs32_lr1e-4_transformer_safm
+model_dir: ./models/bs32_lr1e-4_transformer_layer6
 
 num_obs: 15
 num_pred: 90
