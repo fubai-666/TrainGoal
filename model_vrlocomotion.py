@@ -23,7 +23,7 @@ from utils.image_utils import create_gaussian_heatmap_template, create_determist
 from utils.dataloader_vrlocomotion import SceneDataset, scene_collate
 from test_vrlocomotion import evaluate
 from train_vrlocomotion import train_pred_goal
-from model_transformer import PRED_GOAL_Transformer
+from model_factory import build_goal_model, goal_model_config_from_params
 
 
 class Encoder(nn.Module):
@@ -154,28 +154,19 @@ class GoalNet:
 
 		self.obs_len = obs_len
 		self.pred_len = pred_len
-		self.division_factor = 2 ** len(params['encoder_channels'])
 		self.bfloat16 = params['bfloat16']
 		self.main_root = Path(__file__).resolve().parent.parent
 		self.best_traj_score = -float("inf")
 		self.best_traj_model_path = None
 
-		# self.model = PRED_GOAL(obs_len=self.obs_len,
-		# 					   pred_len=self.pred_len,
-		# 					   map_channel=1,
-		# 					   encoder_channels=params['encoder_channels'],
-		# 					   decoder_channels=params['decoder_channels']
-        #                        )
-		self.model = PRED_GOAL_Transformer(
+		self.model_config = goal_model_config_from_params(
+			params,
 			obs_len=self.obs_len,
 			pred_len=self.pred_len,
 			map_channel=1,
-			decoder_channels=[256, 128],
-			embed_dim=256,
-			patch_size=4,
-			num_layers=6,
-			num_heads=8,
 		)
+		self.model = build_goal_model(self.model_config)
+		self.division_factor = self.model.division_factor
 	def _get_main_setting(self):
 		if str(self.main_root) not in sys.path:
 			sys.path.insert(0, str(self.main_root))
@@ -217,7 +208,76 @@ class GoalNet:
 			raise RuntimeError(f"Invalid traj eval csv: {csv_path}")
 		header = rows[0]
 		values = [float(v) for v in rows[1]]
-		return header, values
+		if len(header) != len(values):
+			raise RuntimeError(
+				f"Header/value length mismatch in traj eval csv: {csv_path}"
+			)
+
+		metric_header = []
+		metric_values = []
+		mean_score = None
+		for name, value in zip(header, values):
+			if name == "mean_score":
+				if mean_score is None:
+					mean_score = value
+				continue
+			metric_header.append(name)
+			metric_values.append(value)
+
+		if mean_score is None:
+			mean_score = float(np.mean(metric_values))
+		return mean_score, metric_header, metric_values
+
+	def _append_traj_eval_summary(
+		self,
+		summary_csv_path,
+		epoch_id,
+		checkpoint_path,
+		mean_score,
+		metric_header,
+		metric_values,
+	):
+		"""Append one epoch and normalize summaries created by the old duplicate header."""
+		desired_header = ["epoch", "checkpoint", "mean_score"] + metric_header
+		existing_rows = []
+
+		if os.path.exists(summary_csv_path):
+			with open(summary_csv_path, "r", encoding="utf-8", newline="") as f:
+				rows = list(csv.reader(f))
+			if rows:
+				existing_header = rows[0]
+				column_index = {}
+				for index, name in enumerate(existing_header):
+					column_index.setdefault(name, index)
+				missing = [name for name in desired_header if name not in column_index]
+				if missing:
+					raise RuntimeError(
+						f"Unsupported traj eval summary schema in {summary_csv_path}; "
+						f"missing columns: {missing}"
+					)
+				for row in rows[1:]:
+					if not row:
+						continue
+					try:
+						existing_rows.append(
+							[row[column_index[name]] for name in desired_header]
+						)
+					except IndexError as exc:
+						raise RuntimeError(
+							f"Invalid row in traj eval summary: {summary_csv_path}"
+						) from exc
+
+		new_row = [
+			epoch_id,
+			os.path.basename(checkpoint_path),
+			mean_score,
+			*metric_values,
+		]
+		with open(summary_csv_path, "w", encoding="utf-8", newline="") as f:
+			writer = csv.writer(f)
+			writer.writerow(desired_header)
+			writer.writerows(existing_rows)
+			writer.writerow(new_row)
 
 	def _save_best_checkpoint(self, checkpoint_path, eval_csv_path, epoch_id, model_dir):
 		best_dir = os.path.join(model_dir, "best")
@@ -253,18 +313,21 @@ class GoalNet:
 			self._run_main_script("eval_traj.py", ["eval_traj.py"])
 
 			eval_csv_path = eval_dir / "eval_traj.csv"
-			header, values = self._read_traj_eval_metrics(eval_csv_path)
-			score = float(np.mean(values))
+			score, metric_header, metric_values = self._read_traj_eval_metrics(
+				eval_csv_path
+			)
 			export_eval_csv_path = batch_eval_dir / f"eval_traj_epoch{epoch_id}.csv"
 			shutil.copy2(eval_csv_path, export_eval_csv_path)
 
 			summary_csv_path = os.path.join(model_dir, "traj_eval_summary.csv")
-			write_header = not os.path.exists(summary_csv_path)
-			with open(summary_csv_path, "a", encoding="utf-8", newline="") as f:
-				writer = csv.writer(f)
-				if write_header:
-					writer.writerow(["epoch", "checkpoint", "mean_score"] + header)
-				writer.writerow([epoch_id, os.path.basename(checkpoint_path), score] + values)
+			self._append_traj_eval_summary(
+				summary_csv_path,
+				epoch_id,
+				checkpoint_path,
+				score,
+				metric_header,
+				metric_values,
+			)
 
 			if score > self.best_traj_score:
 				self.best_traj_score = score
@@ -351,6 +414,12 @@ class GoalNet:
 		if resume_epoch is not None:
 			checkpoint_path = os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(resume_epoch))
 			checkpoint = torch.load(checkpoint_path, map_location=device)
+			checkpoint_config = checkpoint.get('model_config')
+			if checkpoint_config is not None and checkpoint_config != self.model_config:
+				raise ValueError(
+					f"Checkpoint model_config does not match the active config: "
+					f"{checkpoint_config} != {self.model_config}"
+				)
 			model.load_state_dict(checkpoint['model_state_dict'])
 			optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 		criterion = nn.BCEWithLogitsLoss()
@@ -433,6 +502,8 @@ class GoalNet:
 			torch.save(
 				{
 					'epoch': epoch_id,
+					'architecture': self.model_config['model_name'],
+					'model_config': self.model_config,
 					'model_state_dict': model.state_dict(),
 					'optimizer_state_dict': optimizer.state_dict(),
 				},

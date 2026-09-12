@@ -5,7 +5,17 @@ num_epochs: 10
 bfloat16: false
 
 use_latest_epoch: false
-model_dir: ./models/bs32_lr1e-4_transformer_layer6
+model_dir: ./models/bs32_lr1e-4_geostformer_temporal3
+
+model_name: geostformer
+model_params:
+  scene_channels: [64, 128, 256]
+  embed_dim: 256
+  temporal_layers: 3
+  temporal_heads: 8
+  cross_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.1
 
 num_obs: 15
 num_pred: 90
