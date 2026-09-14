@@ -4,10 +4,10 @@ batch_size: 32
 num_epochs: 10
 bfloat16: false
 
-use_latest_epoch: false
-model_dir: ./models/bs32_lr1e-4_geostformer_temporal3
+use_latest_epoch: true
+model_dir: ./models/bs32_lr1e-4_goalqueryformer_temporal3_query8_querylayer2_dropout01
 
-model_name: geostformer
+model_name: goalqueryformer
 model_params:
   scene_channels: [64, 128, 256]
   embed_dim: 256
@@ -15,7 +15,20 @@ model_params:
   temporal_heads: 8
   cross_heads: 8
   mlp_ratio: 4.0
+
+  num_goal_queries: 8
+  goal_query_layers: 2
+  goal_query_heads: 8
+  goal_query_mlp_ratio: 2.0
+
   dropout: 0.1
+
+# After all checkpoints are saved, run Full102 for every epoch and rank the
+# best epochs by the mean of traj_top5(d>1m), traj_top5(d>2m), traj_top5(d>3m).
+run_full_eval_after_training: true
+full_eval_top_k: 3
+full_eval_scene_ids: [444, 813, 814, 824, 829, 839, 853, 873, 876]
+full_eval_action_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 num_obs: 15
 num_pred: 90

@@ -158,6 +158,25 @@ class GoalNet:
 		self.main_root = Path(__file__).resolve().parent.parent
 		self.best_traj_score = -float("inf")
 		self.best_traj_model_path = None
+		self.num_epochs = int(params["num_epochs"])
+		self.full_eval_top_k = int(params.get("full_eval_top_k", 3))
+		if self.full_eval_top_k <= 0:
+			raise ValueError("full_eval_top_k must be positive")
+		self.run_full_eval_after_training = bool(
+			params.get("run_full_eval_after_training", True)
+		)
+		self.full_eval_scene_ids = [
+			int(value) for value in params.get("full_eval_scene_ids", [])
+		]
+		self.full_eval_action_ids = [
+			int(value) for value in params.get("full_eval_action_ids", [])
+		]
+		if self.run_full_eval_after_training and (
+			not self.full_eval_scene_ids or not self.full_eval_action_ids
+		):
+			raise ValueError(
+				"full_eval_scene_ids and full_eval_action_ids are required for full evaluation"
+			)
 
 		self.model_config = goal_model_config_from_params(
 			params,
@@ -237,8 +256,21 @@ class GoalNet:
 		metric_header,
 		metric_values,
 	):
-		"""Append one epoch and normalize summaries created by the old duplicate header."""
-		desired_header = ["epoch", "checkpoint", "mean_score"] + metric_header
+		"""Append one Full102 epoch, including the mean of its three Top-5 metrics."""
+		top5_names = [name for name in metric_header if name.startswith("traj_top5(")]
+		if len(top5_names) != 3:
+			raise RuntimeError(
+				f"Expected exactly three Top-5 metrics, got {top5_names}"
+			)
+		metric_by_name = dict(zip(metric_header, metric_values))
+		top5_mean_score = float(np.mean([metric_by_name[name] for name in top5_names]))
+		desired_header = [
+			"epoch",
+			"checkpoint",
+			"top5_mean_score",
+			"mean_score",
+			*metric_header,
+		]
 		existing_rows = []
 
 		if os.path.exists(summary_csv_path):
@@ -249,7 +281,10 @@ class GoalNet:
 				column_index = {}
 				for index, name in enumerate(existing_header):
 					column_index.setdefault(name, index)
-				missing = [name for name in desired_header if name not in column_index]
+				missing = [
+					name for name in desired_header
+					if name != "top5_mean_score" and name not in column_index
+				]
 				if missing:
 					raise RuntimeError(
 						f"Unsupported traj eval summary schema in {summary_csv_path}; "
@@ -259,9 +294,16 @@ class GoalNet:
 					if not row:
 						continue
 					try:
-						existing_rows.append(
-							[row[column_index[name]] for name in desired_header]
-						)
+						migrated = []
+						for name in desired_header:
+							if name == "top5_mean_score" and name not in column_index:
+								migrated.append(str(float(np.mean([
+									float(row[column_index[top5_name]])
+									for top5_name in top5_names
+								]))))
+							else:
+								migrated.append(row[column_index[name]])
+						existing_rows.append(migrated)
 					except IndexError as exc:
 						raise RuntimeError(
 							f"Invalid row in traj eval summary: {summary_csv_path}"
@@ -270,8 +312,14 @@ class GoalNet:
 		new_row = [
 			epoch_id,
 			os.path.basename(checkpoint_path),
+			top5_mean_score,
 			mean_score,
 			*metric_values,
+		]
+		existing_rows = [
+			row
+			for row in existing_rows
+			if str(row[0]) != str(epoch_id)
 		]
 		with open(summary_csv_path, "w", encoding="utf-8", newline="") as f:
 			writer = csv.writer(f)
@@ -279,20 +327,47 @@ class GoalNet:
 			writer.writerows(existing_rows)
 			writer.writerow(new_row)
 
-	def _save_best_checkpoint(self, checkpoint_path, eval_csv_path, epoch_id, model_dir):
-		best_dir = os.path.join(model_dir, "best")
-		os.makedirs(best_dir, exist_ok=True)
-		for fname in os.listdir(best_dir):
-			if fname.endswith(".pt") or fname.endswith(".csv"):
-				os.remove(os.path.join(best_dir, fname))
-		best_name = f"model_pred_goal_best_epoch{epoch_id}.pt"
-		shutil.copy2(checkpoint_path, os.path.join(best_dir, best_name))
-		shutil.copy2(eval_csv_path, os.path.join(best_dir, f"eval_traj_best_epoch{epoch_id}.csv"))
+	def _write_full102_top_epochs(self, summary_csv_path, top_csv_path):
+		"""Write the best Full102 epochs ranked by the three-metric Top-5 mean."""
+		with open(summary_csv_path, "r", encoding="utf-8", newline="") as f:
+			reader = csv.DictReader(f)
+			fieldnames = reader.fieldnames or []
+			rows = list(reader)
 
-	def eval_traj_checkpoint(self, checkpoint_path, epoch_id, model_dir):
+		if "top5_mean_score" not in fieldnames:
+			raise RuntimeError(
+				f"Missing top5_mean_score in Full102 summary: {summary_csv_path}"
+			)
+		rows.sort(
+			key=lambda row: (-float(row["top5_mean_score"]), int(row["epoch"]))
+		)
+		top_rows = rows[:self.full_eval_top_k]
+
+		with open(top_csv_path, "w", encoding="utf-8", newline="") as f:
+			writer = csv.DictWriter(f, fieldnames=["rank", *fieldnames])
+			writer.writeheader()
+			for rank, row in enumerate(top_rows, start=1):
+				writer.writerow({"rank": rank, **row})
+
+		if top_rows:
+			self.best_traj_score = float(top_rows[0]["top5_mean_score"])
+			self.best_traj_model_path = top_rows[0]["checkpoint"]
+		return top_rows
+
+	def _run_traj_eval(
+		self,
+		checkpoint_path,
+		epoch_id,
+		model_dir,
+		eval_kind,
+		eval_samples=None,
+		scene_ids=None,
+		action_ids=None,
+	):
+		checkpoint_path = os.path.abspath(os.fspath(checkpoint_path))
 		st_main = self._get_main_setting()
 		run_name = os.path.basename(os.path.normpath(model_dir))
-		path_output = f"{run_name}_epoch{epoch_id}"
+		path_output = f"{run_name}_{eval_kind}_epoch{epoch_id}"
 		batch_eval_dir = self.main_root / "Eval-traj" / run_name
 		batch_eval_dir.mkdir(parents=True, exist_ok=True)
 		result_dir = self.main_root / "Result" / path_output
@@ -302,12 +377,22 @@ class GoalNet:
 		old_path_output = st_main.path_output
 		old_scene_id = st_main.scene_id
 		old_act_id = st_main.act_id
+		had_eval_samples = hasattr(st_main, "eval_samples")
+		old_eval_samples = getattr(st_main, "eval_samples", None)
+		had_write_epoch_tables = hasattr(st_main, "write_epoch_evaluation_tables")
+		old_write_epoch_tables = getattr(
+			st_main, "write_epoch_evaluation_tables", True
+		)
 
 		try:
 			st_main.goal_model_path = checkpoint_path
 			st_main.path_output = path_output
-			st_main.scene_id = [444]
-			st_main.act_id = [0]
+			st_main.eval_samples = eval_samples
+			st_main.write_epoch_evaluation_tables = False
+			if scene_ids is not None:
+				st_main.scene_id = list(scene_ids)
+			if action_ids is not None:
+				st_main.act_id = list(action_ids)
 
 			self._run_main_script("TR-LLM.py", ["TR-LLM.py", "", "1", "0", "0", "0"])
 			self._run_main_script("eval_traj.py", ["eval_traj.py"])
@@ -316,25 +401,10 @@ class GoalNet:
 			score, metric_header, metric_values = self._read_traj_eval_metrics(
 				eval_csv_path
 			)
-			export_eval_csv_path = batch_eval_dir / f"eval_traj_epoch{epoch_id}.csv"
-			shutil.copy2(eval_csv_path, export_eval_csv_path)
-
-			summary_csv_path = os.path.join(model_dir, "traj_eval_summary.csv")
-			self._append_traj_eval_summary(
-				summary_csv_path,
-				epoch_id,
-				checkpoint_path,
-				score,
-				metric_header,
-				metric_values,
-			)
-
-			if score > self.best_traj_score:
-				self.best_traj_score = score
-				self.best_traj_model_path = checkpoint_path
-				self._save_best_checkpoint(checkpoint_path, export_eval_csv_path, epoch_id, model_dir)
-
-			return score
+			if eval_kind == "full102":
+				export_eval_csv_path = batch_eval_dir / f"full102_epoch{epoch_id}.csv"
+				shutil.copy2(eval_csv_path, export_eval_csv_path)
+			return score, metric_header, metric_values
 		finally:
 			if result_dir.exists():
 				shutil.rmtree(result_dir)
@@ -344,6 +414,97 @@ class GoalNet:
 			st_main.path_output = old_path_output
 			st_main.scene_id = old_scene_id
 			st_main.act_id = old_act_id
+			if had_eval_samples:
+				st_main.eval_samples = old_eval_samples
+			else:
+				delattr(st_main, "eval_samples")
+			if had_write_epoch_tables:
+				st_main.write_epoch_evaluation_tables = old_write_epoch_tables
+			else:
+				delattr(st_main, "write_epoch_evaluation_tables")
+
+	def evaluate_all_checkpoints_full(self, model_dir):
+		prefix = "model_pred_goal_"
+		suffix = "epoch.pt"
+		checkpoints = []
+		for name in os.listdir(model_dir):
+			if not name.startswith(prefix) or not name.endswith(suffix):
+				continue
+			epoch_text = name[len(prefix):-len(suffix)]
+			if epoch_text.isdigit():
+				checkpoints.append((int(epoch_text), os.path.join(model_dir, name)))
+
+		expected_epochs = set(range(self.num_epochs))
+		available_epochs = {epoch_id for epoch_id, _ in checkpoints}
+		missing_epochs = sorted(expected_epochs - available_epochs)
+		if missing_epochs:
+			raise RuntimeError(
+				"Full102 evaluation starts only after all training epochs are saved; "
+				f"missing checkpoints for epochs: {missing_epochs}"
+			)
+
+		checkpoints = [
+			(epoch_id, checkpoint_path)
+			for epoch_id, checkpoint_path in sorted(checkpoints)
+			if epoch_id in expected_epochs
+		]
+		print(f"Running Full102 evaluation for all {len(checkpoints)} checkpoints")
+		run_name = os.path.basename(os.path.normpath(model_dir))
+		final_eval_dir = self.main_root / "Eval-traj" / run_name
+		final_eval_dir.mkdir(parents=True, exist_ok=True)
+		full_summary_path = final_eval_dir / "full102_summary.csv"
+		top_epochs_path = final_eval_dir / f"full102_top{self.full_eval_top_k}.csv"
+
+		# Rebuild both tables from the per-epoch CSV files. This prevents stale
+		# rows from an older run while retaining resumability of expensive evals.
+		if full_summary_path.exists():
+			full_summary_path.unlink()
+		if top_epochs_path.exists():
+			top_epochs_path.unlink()
+
+		for epoch_id, checkpoint_path in checkpoints:
+			checkpoint_path = os.path.abspath(checkpoint_path)
+			if not os.path.isfile(checkpoint_path):
+				raise FileNotFoundError(checkpoint_path)
+
+			completed_eval_path = final_eval_dir / f"full102_epoch{epoch_id}.csv"
+			if completed_eval_path.is_file():
+				score, metric_header, metric_values = self._read_traj_eval_metrics(
+					completed_eval_path
+				)
+				self._append_traj_eval_summary(
+					full_summary_path,
+					epoch_id,
+					checkpoint_path,
+					score,
+					metric_header,
+					metric_values,
+				)
+				print(f"Skip completed Full102 epoch {epoch_id}: {completed_eval_path}")
+			else:
+				score, metric_header, metric_values = self._run_traj_eval(
+					checkpoint_path,
+					epoch_id,
+					model_dir,
+					eval_kind="full102",
+					eval_samples=None,
+					scene_ids=self.full_eval_scene_ids,
+					action_ids=self.full_eval_action_ids,
+				)
+				self._append_traj_eval_summary(
+					full_summary_path,
+					epoch_id,
+					checkpoint_path,
+					score,
+					metric_header,
+					metric_values,
+				)
+				print(f"Full102 epoch {epoch_id} mean score: {score}")
+
+			self._write_full102_top_epochs(full_summary_path, top_epochs_path)
+
+		print(f"Full102 summary: {full_summary_path}")
+		print(f"Top {self.full_eval_top_k} epochs by Top-5 mean: {top_epochs_path}")
         
 	def train(self, train_data, val_data, params, train_image_path, val_image_path, batch_size=8, device=None, dataset_name=None, test_scene=0):
 
@@ -356,7 +517,8 @@ class GoalNet:
 
 		print('Preprocess data')
 
-		model_dir = params['model_dir']
+		model_dir = os.path.abspath(os.fspath(params['model_dir']))
+		params['model_dir'] = model_dir
 		resume_epoch = None
 		if params['use_latest_epoch']:
 			if os.path.isdir(model_dir):
@@ -446,7 +608,6 @@ class GoalNet:
 		best_val_loss = 99999999999999
 
 		loss_csv_path = os.path.join(model_dir, 'loss_train-val.csv')
-		traj_eval_csv_path = os.path.join(model_dir, 'traj_eval_summary.csv')
 		self.train_loss_mem = []
 		self.val_loss_mem = []
 		self.epoch_mem = []
@@ -460,14 +621,6 @@ class GoalNet:
 			self.val_loss_mem = loss_hist[:, 2].tolist()
 			if self.val_loss_mem:
 				best_val_loss = min(self.val_loss_mem)
-		if os.path.exists(traj_eval_csv_path):
-			with open(traj_eval_csv_path, "r", encoding="utf-8") as f:
-				rows = list(csv.reader(f))
-			if len(rows) > 1:
-				best_row = max(rows[1:], key=lambda row: float(row[2]))
-				self.best_traj_score = float(best_row[2])
-				self.best_traj_model_path = os.path.join(model_dir, best_row[1])
-
 		print('Start training')
 		start_global_epoch = 0 if resume_epoch is None else resume_epoch + 1
 		epoch_progress = tqdm(range(start_global_epoch, params['num_epochs']), desc='Epoch', dynamic_ncols=True)
@@ -509,10 +662,6 @@ class GoalNet:
 				},
 				checkpoint_path,
 			)
-			traj_score = self.eval_traj_checkpoint(checkpoint_path, epoch_id, model_dir)
-			print(f'Traj eval mean score: {traj_score}')
-			print(f'Best traj score so far: {self.best_traj_score}')
-				
 			self.epoch_mem.append(epoch_id)
 			self.train_loss_mem.append(train_loss)
 			self.val_loss_mem.append(val_loss)
@@ -523,6 +672,9 @@ class GoalNet:
 				header='epoch,train_loss,val_loss',
 				comments='',
 			)
+
+		if self.run_full_eval_after_training:
+			self.evaluate_all_checkpoints_full(model_dir)
 
 
 	def evaluate(self, data, params, image_path, batch_size=8, 
