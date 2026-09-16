@@ -1,13 +1,15 @@
 resize: 0.25  # image resize factor, to also resize the trajectories to fit image scale
 learning_rate: 0.0001
+optimizer: adamw       # adam / adamw
+weight_decay: 0.0001
 batch_size: 32
 num_epochs: 10
 bfloat16: false
 
-use_latest_epoch: true
-model_dir: ./models/bs32_lr1e-4_goalqueryformer_temporal3_query8_querylayer2_dropout01
+use_latest_epoch: false
+model_dir: ./models/bs32_lr1e-4_goalqueryformer_temporal3_query1_querylayer1_gated_adamw_wd1e-4
 
-model_name: goalqueryformer
+model_name: goalqueryformer     #geostformer / goalqueryformer
 model_params:
   scene_channels: [64, 128, 256]
   embed_dim: 256
@@ -16,17 +18,42 @@ model_params:
   cross_heads: 8
   mlp_ratio: 4.0
 
-  num_goal_queries: 8
-  goal_query_layers: 2
+  # The following five parameters are active only for GoalQueryFormer.
+  num_goal_queries: 1
+  goal_query_layers: 1
   goal_query_heads: 8
-  goal_query_mlp_ratio: 2.0
+  goal_query_mlp_ratio: 4.0
+  use_goal_query_gates: true
 
   dropout: 0.1
 
-# After all checkpoints are saved, run Full102 for every epoch and rank the
-# best epochs by the mean of traj_top5(d>1m), traj_top5(d>2m), traj_top5(d>3m).
+# Run this fixed, stratified 18-sample Mini-Eval after every epoch. It covers
+# all 9 scenes with 2 samples per scene and is used only for checkpoint ranking.
+mini_eval_samples:
+  - [444, 0, 1]
+  - [444, 7, 3]
+  - [813, 1, 3]
+  - [813, 7, 1]
+  - [814, 0, 3]
+  - [814, 3, 3]
+  - [824, 2, 3]
+  - [824, 5, 1]
+  - [829, 3, 3]
+  - [829, 8, 2]
+  - [839, 0, 3]
+  - [839, 9, 3]
+  - [853, 3, 3]
+  - [853, 4, 1]
+  - [873, 3, 3]
+  - [873, 6, 1]
+  - [876, 2, 3]
+  - [876, 3, 1]
+mini_eval_top_k: 2
+
+# After training, run Full102 only for the Mini-Eval Top 2 checkpoints. Both
+# stages rank by mean(traj_top5(d>1m), traj_top5(d>2m), traj_top5(d>3m)).
 run_full_eval_after_training: true
-full_eval_top_k: 3
+full_eval_top_k: 2
 full_eval_scene_ids: [444, 813, 814, 824, 829, 839, 853, 873, 876]
 full_eval_action_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 

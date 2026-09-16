@@ -159,7 +159,18 @@ class GoalNet:
 		self.best_traj_score = -float("inf")
 		self.best_traj_model_path = None
 		self.num_epochs = int(params["num_epochs"])
-		self.full_eval_top_k = int(params.get("full_eval_top_k", 3))
+		self.mini_eval_samples = [
+			tuple(int(value) for value in sample)
+			for sample in params.get("mini_eval_samples", [])
+		]
+		if not self.mini_eval_samples:
+			raise ValueError("mini_eval_samples must not be empty")
+		if len(set(self.mini_eval_samples)) != len(self.mini_eval_samples):
+			raise ValueError("mini_eval_samples must contain unique triples")
+		self.mini_eval_top_k = int(params.get("mini_eval_top_k", 2))
+		if self.mini_eval_top_k <= 0:
+			raise ValueError("mini_eval_top_k must be positive")
+		self.full_eval_top_k = int(params.get("full_eval_top_k", 2))
 		if self.full_eval_top_k <= 0:
 			raise ValueError("full_eval_top_k must be positive")
 		self.run_full_eval_after_training = bool(
@@ -256,7 +267,7 @@ class GoalNet:
 		metric_header,
 		metric_values,
 	):
-		"""Append one Full102 epoch, including the mean of its three Top-5 metrics."""
+		"""Append one evaluation row, including the mean of its three Top-5 metrics."""
 		top5_names = [name for name in metric_header if name.startswith("traj_top5(")]
 		if len(top5_names) != 3:
 			raise RuntimeError(
@@ -423,7 +434,79 @@ class GoalNet:
 			else:
 				delattr(st_main, "write_epoch_evaluation_tables")
 
-	def evaluate_all_checkpoints_full(self, model_dir):
+	def _rank_mini_eval_checkpoints(self, model_dir):
+		summary_csv_path = os.path.join(model_dir, "mini_eval_summary.csv")
+		if not os.path.exists(summary_csv_path):
+			return []
+
+		with open(summary_csv_path, "r", encoding="utf-8", newline="") as f:
+			reader = csv.DictReader(f)
+			fieldnames = reader.fieldnames or []
+			rows = [row for row in reader if row.get("checkpoint")]
+		if "top5_mean_score" not in fieldnames:
+			raise RuntimeError(
+				f"Missing top5_mean_score in Mini-Eval summary: {summary_csv_path}"
+			)
+		rows.sort(
+			key=lambda row: (-float(row["top5_mean_score"]), int(row["epoch"]))
+		)
+		top_rows = rows[:self.mini_eval_top_k]
+
+		top_path = os.path.join(model_dir, f"mini_eval_top{self.mini_eval_top_k}.csv")
+		with open(top_path, "w", encoding="utf-8", newline="") as f:
+			writer = csv.DictWriter(f, fieldnames=["rank", *fieldnames])
+			writer.writeheader()
+			for rank, row in enumerate(top_rows, start=1):
+				writer.writerow({"rank": rank, **row})
+
+		if top_rows:
+			self.best_traj_score = float(top_rows[0]["top5_mean_score"])
+			self.best_traj_model_path = os.path.join(
+				model_dir, top_rows[0]["checkpoint"]
+			)
+		return top_rows
+
+	def eval_mini_checkpoint(self, checkpoint_path, epoch_id, model_dir):
+		score, metric_header, metric_values = self._run_traj_eval(
+			checkpoint_path,
+			epoch_id,
+			model_dir,
+			eval_kind="mini_eval",
+			eval_samples=self.mini_eval_samples,
+		)
+		self._append_traj_eval_summary(
+			os.path.join(model_dir, "mini_eval_summary.csv"),
+			epoch_id,
+			checkpoint_path,
+			score,
+			metric_header,
+			metric_values,
+		)
+		top5_values = [
+			float(value)
+			for name, value in zip(metric_header, metric_values)
+			if str(name).startswith("traj_top5(")
+		]
+		if len(top5_values) != 3:
+			raise RuntimeError(
+				f"Expected 3 traj_top5 metrics for Mini-Eval, got {len(top5_values)}"
+			)
+		top5_mean_score = float(np.mean(top5_values))
+		self._rank_mini_eval_checkpoints(model_dir)
+		return top5_mean_score
+
+	def evaluate_missing_mini_checkpoints(self, model_dir):
+		"""Backfill Mini-Eval when resuming checkpoints created before this workflow."""
+		completed_epochs = set()
+		summary_path = os.path.join(model_dir, "mini_eval_summary.csv")
+		if os.path.exists(summary_path):
+			with open(summary_path, "r", encoding="utf-8", newline="") as f:
+				for row in csv.DictReader(f):
+					try:
+						completed_epochs.add(int(row["epoch"]))
+					except (KeyError, TypeError, ValueError):
+						continue
+
 		prefix = "model_pred_goal_"
 		suffix = "epoch.pt"
 		checkpoints = []
@@ -434,21 +517,22 @@ class GoalNet:
 			if epoch_text.isdigit():
 				checkpoints.append((int(epoch_text), os.path.join(model_dir, name)))
 
-		expected_epochs = set(range(self.num_epochs))
-		available_epochs = {epoch_id for epoch_id, _ in checkpoints}
-		missing_epochs = sorted(expected_epochs - available_epochs)
-		if missing_epochs:
-			raise RuntimeError(
-				"Full102 evaluation starts only after all training epochs are saved; "
-				f"missing checkpoints for epochs: {missing_epochs}"
-			)
+		for epoch_id, checkpoint_path in sorted(checkpoints):
+			if epoch_id >= self.num_epochs or epoch_id in completed_epochs:
+				continue
+			print(f"Backfill Mini-Eval epoch {epoch_id}")
+			self.eval_mini_checkpoint(checkpoint_path, epoch_id, model_dir)
 
-		checkpoints = [
-			(epoch_id, checkpoint_path)
-			for epoch_id, checkpoint_path in sorted(checkpoints)
-			if epoch_id in expected_epochs
-		]
-		print(f"Running Full102 evaluation for all {len(checkpoints)} checkpoints")
+		return self._rank_mini_eval_checkpoints(model_dir)
+
+	def evaluate_top_checkpoints_full(self, model_dir):
+		top_rows = self._rank_mini_eval_checkpoints(model_dir)
+		if not top_rows:
+			raise RuntimeError("No Mini-Eval checkpoints are available for Full102 evaluation")
+
+		print(
+			f"Running Full102 evaluation for Top {len(top_rows)} Mini-Eval checkpoints"
+		)
 		run_name = os.path.basename(os.path.normpath(model_dir))
 		final_eval_dir = self.main_root / "Eval-traj" / run_name
 		final_eval_dir.mkdir(parents=True, exist_ok=True)
@@ -462,8 +546,11 @@ class GoalNet:
 		if top_epochs_path.exists():
 			top_epochs_path.unlink()
 
-		for epoch_id, checkpoint_path in checkpoints:
-			checkpoint_path = os.path.abspath(checkpoint_path)
+		for row in top_rows:
+			epoch_id = int(row["epoch"])
+			checkpoint_path = os.path.abspath(
+				os.path.join(model_dir, row["checkpoint"])
+			)
 			if not os.path.isfile(checkpoint_path):
 				raise FileNotFoundError(checkpoint_path)
 
@@ -503,8 +590,8 @@ class GoalNet:
 
 			self._write_full102_top_epochs(full_summary_path, top_epochs_path)
 
-		print(f"Full102 summary: {full_summary_path}")
-		print(f"Top {self.full_eval_top_k} epochs by Top-5 mean: {top_epochs_path}")
+		print(f"Full102 summary for Mini-Eval Top {len(top_rows)}: {full_summary_path}")
+		print(f"Full102 ranking by Top-5 mean: {top_epochs_path}")
         
 	def train(self, train_data, val_data, params, train_image_path, val_image_path, batch_size=8, device=None, dataset_name=None, test_scene=0):
 
@@ -572,7 +659,24 @@ class GoalNet:
 		# for param in model.semantic_segmentation.parameters():
 		# 	param.requires_grad = False
 
-		optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+		optimizer_name = str(params.get("optimizer", "adam")).strip().lower()
+		weight_decay = float(params.get("weight_decay", 0.0))
+		if weight_decay < 0:
+			raise ValueError("weight_decay must be non-negative")
+		optimizer_classes = {
+			"adam": torch.optim.Adam,
+			"adamw": torch.optim.AdamW,
+		}
+		if optimizer_name not in optimizer_classes:
+			raise ValueError(
+				f"Unsupported optimizer: {optimizer_name}. "
+				f"Choose one of: {', '.join(sorted(optimizer_classes))}"
+			)
+		optimizer = optimizer_classes[optimizer_name](
+			model.parameters(),
+			lr=params["learning_rate"],
+			weight_decay=weight_decay,
+		)
 		if resume_epoch is not None:
 			checkpoint_path = os.path.join(model_dir, 'model_pred_goal_{}epoch.pt'.format(resume_epoch))
 			checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -582,8 +686,37 @@ class GoalNet:
 					f"Checkpoint model_config does not match the active config: "
 					f"{checkpoint_config} != {self.model_config}"
 				)
+			if (
+				hasattr(model, "goal_query_reasoner")
+				and model.goal_query_reasoner.use_goal_query_gates
+			) and not all(
+				key in checkpoint["model_state_dict"]
+				for key in (
+					"goal_query_reasoner.feedback_gate",
+					"goal_query_reasoner.prior_gate",
+				)
+			):
+				raise ValueError(
+					"This checkpoint predates the gated GoalQueryFormer and cannot "
+					"resume its optimizer state. Use a new model_dir to train the "
+					"gated model from epoch 0."
+				)
+			checkpoint_optimizer_name = str(
+				checkpoint.get("optimizer_name", "adam")
+			).strip().lower()
+			if checkpoint_optimizer_name != optimizer_name:
+				raise ValueError(
+					"Checkpoint optimizer does not match the active config: "
+					f"{checkpoint_optimizer_name} != {optimizer_name}. "
+					"Use a new model_dir for a different optimizer."
+				)
 			model.load_state_dict(checkpoint['model_state_dict'])
 			optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+			# Optimizer state loading also restores the old parameter-group
+			# hyperparameters. Reapply the active experiment settings on resume.
+			for param_group in optimizer.param_groups:
+				param_group['lr'] = params["learning_rate"]
+				param_group['weight_decay'] = weight_decay
 		criterion = nn.BCEWithLogitsLoss()
 
 		# Create template
@@ -657,6 +790,8 @@ class GoalNet:
 					'epoch': epoch_id,
 					'architecture': self.model_config['model_name'],
 					'model_config': self.model_config,
+					'optimizer_name': optimizer_name,
+					'weight_decay': weight_decay,
 					'model_state_dict': model.state_dict(),
 					'optimizer_state_dict': optimizer.state_dict(),
 				},
@@ -673,8 +808,17 @@ class GoalNet:
 				comments='',
 			)
 
+			mini_eval_score = self.eval_mini_checkpoint(
+				checkpoint_path,
+				epoch_id,
+				model_dir,
+			)
+			print(f'Mini-Eval Top-5 mean score: {mini_eval_score}')
+			print(f'Best Mini-Eval Top-5 mean so far: {self.best_traj_score}')
+
+		self.evaluate_missing_mini_checkpoints(model_dir)
 		if self.run_full_eval_after_training:
-			self.evaluate_all_checkpoints_full(model_dir)
+			self.evaluate_top_checkpoints_full(model_dir)
 
 
 	def evaluate(self, data, params, image_path, batch_size=8, 
