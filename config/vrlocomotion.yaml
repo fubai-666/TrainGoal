@@ -7,7 +7,7 @@ num_epochs: 10
 bfloat16: false
 
 use_latest_epoch: false
-model_dir: ./models/goalqueryformer-ablation/geometry_no_bias
+model_dir: ./models/goalqueryformer-ablation/motion_conditioning_none
 
 model_name: goalqueryformer     #geostformer / goalqueryformer
 model_params:
@@ -17,14 +17,15 @@ model_params:
   temporal_heads: 8
   cross_heads: 8
   mlp_ratio: 4.0
-  geometry_bias_mode: none
+  geometry_bias_mode: full  # full / none
 
-  # The following five parameters are active only for GoalQueryFormer.
+  # The following six parameters are active only for GoalQueryFormer.
   num_goal_queries: 5
   goal_query_layers: 1
   goal_query_heads: 8
   goal_query_mlp_ratio: 4.0
   use_goal_query_gates: true
+  query_conditioning_mode: none  # last_motion_token / none
 
   dropout: 0.1
 
