@@ -202,6 +202,16 @@ class GoalNet:
 			sys.path.insert(0, str(self.main_root))
 		return importlib.import_module("setting")
 
+	def _get_full_eval_dir(self, model_dir):
+		"""Mirror a model's path below models/ into Eval-traj/."""
+		model_path = Path(model_dir).resolve()
+		models_root = (Path(__file__).resolve().parent / "models").resolve()
+		try:
+			relative_run_path = model_path.relative_to(models_root)
+		except ValueError:
+			relative_run_path = Path(model_path.name)
+		return self.main_root / "Eval-traj" / relative_run_path
+
 	def _run_main_script(self, script_name, argv):
 		old_argv = sys.argv[:]
 		old_cwd = os.getcwd()
@@ -379,7 +389,7 @@ class GoalNet:
 		st_main = self._get_main_setting()
 		run_name = os.path.basename(os.path.normpath(model_dir))
 		path_output = f"{run_name}_{eval_kind}_epoch{epoch_id}"
-		batch_eval_dir = self.main_root / "Eval-traj" / run_name
+		batch_eval_dir = self._get_full_eval_dir(model_dir)
 		batch_eval_dir.mkdir(parents=True, exist_ok=True)
 		result_dir = self.main_root / "Result" / path_output
 		eval_dir = self.main_root / "Eval-traj" / path_output
@@ -533,8 +543,7 @@ class GoalNet:
 		print(
 			f"Running Full102 evaluation for Top {len(top_rows)} Mini-Eval checkpoints"
 		)
-		run_name = os.path.basename(os.path.normpath(model_dir))
-		final_eval_dir = self.main_root / "Eval-traj" / run_name
+		final_eval_dir = self._get_full_eval_dir(model_dir)
 		final_eval_dir.mkdir(parents=True, exist_ok=True)
 		full_summary_path = final_eval_dir / "full102_summary.csv"
 		top_epochs_path = final_eval_dir / f"full102_top{self.full_eval_top_k}.csv"

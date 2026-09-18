@@ -7,7 +7,7 @@ num_epochs: 10
 bfloat16: false
 
 use_latest_epoch: false
-model_dir: ./models/bs32_lr1e-4_goalqueryformer_temporal3_query1_querylayer1_gated_adamw_wd1e-4
+model_dir: ./models/goalqueryformer-ablation/geometry_no_bias
 
 model_name: goalqueryformer     #geostformer / goalqueryformer
 model_params:
@@ -17,9 +17,10 @@ model_params:
   temporal_heads: 8
   cross_heads: 8
   mlp_ratio: 4.0
+  geometry_bias_mode: none
 
   # The following five parameters are active only for GoalQueryFormer.
-  num_goal_queries: 1
+  num_goal_queries: 5
   goal_query_layers: 1
   goal_query_heads: 8
   goal_query_mlp_ratio: 4.0
