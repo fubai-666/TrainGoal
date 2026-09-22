@@ -7,7 +7,7 @@ num_epochs: 10
 bfloat16: false
 
 use_latest_epoch: true
-model_dir: ./models/goalqueryformer-ablation/motion_no_dynamics
+model_dir: ./models/goalqueryformer-ablation/no_goal_query_module
 
 model_name: goalqueryformer     #geostformer / goalqueryformer
 model_params:
@@ -15,7 +15,7 @@ model_params:
   embed_dim: 256
   temporal_layers: 3
   temporal_encoder_mode: transformer  # transformer / none
-  motion_feature_mode: no_dynamics  # full / none / no_position / no_displacement / no_dynamics / no_direction
+  motion_feature_mode: full  # full / none / no_position / no_displacement / no_dynamics / no_direction
   temporal_heads: 8
   cross_heads: 8
   mlp_ratio: 4.0
@@ -30,6 +30,7 @@ model_params:
   query_conditioning_mode: last_motion_token  # last_motion_token / none
   query_injection_mode: full  # full / feedback_only / prior_only / none
   query_memory_mode: scene_motion  # scene_motion / scene_only / motion_only / none
+  goal_query_module_mode: none  # full / none
 
   dropout: 0.1
 
