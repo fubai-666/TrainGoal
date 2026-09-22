@@ -156,6 +156,18 @@ class GoalNet:
 		self.pred_len = pred_len
 		self.bfloat16 = params['bfloat16']
 		self.main_root = Path(__file__).resolve().parent.parent
+		eval_output_group = params.get("eval_output_group")
+		if eval_output_group is not None:
+			eval_output_group = str(eval_output_group).strip()
+			if (
+				not eval_output_group
+				or Path(eval_output_group).name != eval_output_group
+				or eval_output_group in {".", ".."}
+			):
+				raise ValueError(
+					"eval_output_group must be a single directory name"
+				)
+		self.eval_output_group = eval_output_group
 		self.best_traj_score = -float("inf")
 		self.best_traj_model_path = None
 		self.num_epochs = int(params["num_epochs"])
@@ -197,6 +209,14 @@ class GoalNet:
 		)
 		self.model = build_goal_model(self.model_config)
 		self.division_factor = self.model.division_factor
+
+	def _eval_run_dir(self, model_dir):
+		run_name = os.path.basename(os.path.normpath(model_dir))
+		base_dir = self.main_root / "Eval-traj"
+		if self.eval_output_group:
+			base_dir = base_dir / self.eval_output_group
+		return base_dir / run_name
+
 	def _get_main_setting(self):
 		if str(self.main_root) not in sys.path:
 			sys.path.insert(0, str(self.main_root))
@@ -379,7 +399,7 @@ class GoalNet:
 		st_main = self._get_main_setting()
 		run_name = os.path.basename(os.path.normpath(model_dir))
 		path_output = f"{run_name}_{eval_kind}_epoch{epoch_id}"
-		batch_eval_dir = self.main_root / "Eval-traj" / run_name
+		batch_eval_dir = self._eval_run_dir(model_dir)
 		batch_eval_dir.mkdir(parents=True, exist_ok=True)
 		result_dir = self.main_root / "Result" / path_output
 		eval_dir = self.main_root / "Eval-traj" / path_output
@@ -533,8 +553,7 @@ class GoalNet:
 		print(
 			f"Running Full102 evaluation for Top {len(top_rows)} Mini-Eval checkpoints"
 		)
-		run_name = os.path.basename(os.path.normpath(model_dir))
-		final_eval_dir = self.main_root / "Eval-traj" / run_name
+		final_eval_dir = self._eval_run_dir(model_dir)
 		final_eval_dir.mkdir(parents=True, exist_ok=True)
 		full_summary_path = final_eval_dir / "full102_summary.csv"
 		top_epochs_path = final_eval_dir / f"full102_top{self.full_eval_top_k}.csv"
