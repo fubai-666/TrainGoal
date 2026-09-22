@@ -10,11 +10,53 @@ use_latest_epoch: false
 model_dir: ./models/goalqueryformer-compare/concat_cnn
 eval_output_group: goalqueryformer-compare
 
-model_name: concat_cnn     # concat_cnn / concat_transformer / ynet / transformer / geostformer / goalqueryformer
+model_name: concat_cnn     # concat_cnn / concat_transformer / transformer / ynet / geostformer / goalqueryformer
 model_params:
   channels: [64, 128, 256]
   bottleneck_blocks: 2
   dropout: 0.1
+
+# model_name: concat_transformer
+# model_params:
+#   channels: [64, 128, 256]
+#   transformer_layers: 3
+#   transformer_heads: 8
+#   mlp_ratio: 4.0
+#   dropout: 0.1
+
+# model_name: transformer
+# model_params:
+#   decoder_channels: [256, 128]
+#   embed_dim: 256
+#   patch_size: 4
+#   num_layers: 3
+#   num_heads: 8
+#   mlp_ratio: 4.0
+#   dropout: 0.1
+
+# model_name: goalgan     # goalgan / goalsar / decouple_traj
+# model_params:
+#   scene_channels: [8, 16, 16]
+#   motion_embedding_dim: 8
+#   motion_hidden_dim: 16
+#   dropout: 0.3
+
+# model_name: goalsar
+# model_params:
+#   encoder_channels: [32, 32, 64, 64, 64]
+#   decoder_channels: [64, 64, 64, 32, 32]
+#   dropout: 0.0
+
+# model_name: decouple_traj
+# model_params:
+#   scene_channels: [64, 128, 256]
+#   embed_dim: 256
+#   fusion_layers: 2
+#   attention_heads: 8
+#   mlp_ratio: 4.0
+#   fourier_bands: 32
+#   use_scene_counterfactual: true
+#   dropout: 0.1
 
 # Run this fixed, stratified 18-sample Mini-Eval after every epoch. It covers
 # all 9 scenes with 2 samples per scene and is used only for checkpoint ranking.
