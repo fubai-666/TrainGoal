@@ -6,8 +6,8 @@ batch_size: 32
 num_epochs: 10
 bfloat16: false
 
-use_latest_epoch: true
-model_dir: ./models/goalqueryformer-ablation/scene_prior_only
+use_latest_epoch: false
+model_dir: ./models/goalqueryformer-ablation/no_query_layer
 
 model_name: goalqueryformer     #geostformer / goalqueryformer
 model_params:
@@ -23,13 +23,13 @@ model_params:
 
   # The following eight parameters are active only for GoalQueryFormer.
   num_goal_queries: 5
-  goal_query_layers: 1
+  goal_query_layers: 0  # 0 skips Query Layer; initial queries and both injection branches remain
   goal_query_heads: 8
   goal_query_mlp_ratio: 4.0
   use_goal_query_gates: true
   query_conditioning_mode: last_motion_token  # last_motion_token / none
-  query_injection_mode: prior_only  # full / feedback_only / prior_only / none
-  query_memory_mode: scene_only  # scene_motion / scene_only / motion_only / none
+  query_injection_mode: full  # full / feedback_only / prior_only / none
+  query_memory_mode: scene_motion  # scene_motion / scene_only / motion_only / none
   goal_query_module_mode: full  # full / none
 
   dropout: 0.1
